@@ -62,12 +62,6 @@ impl TrayIcon {
             mtm,
         )?;
 
-        if let Some(menu) = &attrs.menu {
-            unsafe {
-                ns_status_item.setMenu((menu.ns_menu() as *const NSMenu).as_ref());
-            }
-        }
-
         Self::set_tooltip_inner(&ns_status_item, attrs.tooltip.clone(), mtm)?;
         Self::set_title_inner(&ns_status_item, attrs.title.clone(), mtm);
 
@@ -130,7 +124,6 @@ impl TrayIcon {
                     .as_ref()
                     .and_then(|m| m.ns_menu().cast::<NSMenu>().as_ref())
                     .map(|menu| menu.retain());
-                ns_status_item.setMenu(menu.as_deref());
                 if let Some(menu) = &menu {
                     let () = msg_send![menu, setDelegate: &**ns_status_item];
                 }
@@ -252,10 +245,13 @@ impl TrayIcon {
     }
 
     pub fn show_menu(&self) {
-        if let Some(ns_status_item) = &self.ns_status_item {
+        if let (Some(ns_status_item), Some(menu)) = (&self.ns_status_item, &self.attrs.menu) {
             unsafe {
-                let button = ns_status_item.button(self.mtm).unwrap();
-                button.performClick(None);
+                if let Some(menu) = (menu.ns_menu() as *const NSMenu).as_ref() {
+                    if menu.numberOfItems() > 0 {
+                        pop_up_status_item_menu(ns_status_item, menu, self.mtm);
+                    }
+                }
             }
         }
     }
@@ -496,18 +492,38 @@ fn on_tray_click(this: &TrayTarget, button: MouseButton) {
         if (menu_on_right_click && button == MouseButton::Right)
             || (menu_on_left_click && button == MouseButton::Left)
         {
-            let has_items = if let Some(menu) = &*this.ivars().menu.borrow() {
-                menu.numberOfItems() > 0
-            } else {
-                false
-            };
-            if has_items {
-                ns_button.performClick(None);
-            } else {
-                ns_button.highlight(true);
+            // The popup is modal and menu actions can re-enter set_menu,
+            // so don't hold the RefCell borrow across it.
+            let menu = this.ivars().menu.borrow().as_ref().map(Retained::clone);
+            if let Some(menu) = menu {
+                if menu.numberOfItems() > 0 {
+                    pop_up_status_item_menu(&this.ivars().status_item, &menu, mtm);
+                    return;
+                }
             }
+
+            ns_button.highlight(true);
         } else {
             ns_button.highlight(true);
+        }
+    }
+}
+
+fn pop_up_status_item_menu(ns_status_item: &NSStatusItem, menu: &NSMenu, mtm: MainThreadMarker) {
+    unsafe {
+        if let Some(ns_button) = ns_status_item.button(mtm) {
+            ns_button.highlight(true);
+        }
+
+        // A persistent NSStatusItem.menu lets the system swallow left clicks
+        // before TrayTarget sees them (macOS 27 beta), and performClick(None)
+        // carries no NSEvent context and no-ops on fullscreen secondary
+        // displays (#251), so pop the menu on demand instead.
+        #[allow(deprecated)]
+        ns_status_item.popUpStatusItemMenu(menu);
+
+        if let Some(ns_button) = ns_status_item.button(mtm) {
+            ns_button.highlight(false);
         }
     }
 }
