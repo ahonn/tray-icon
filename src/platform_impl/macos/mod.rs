@@ -8,8 +8,8 @@ use std::cell::{Cell, RefCell};
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, AllocAnyThread, DeclaredClass, Message};
 use objc2_app_kit::{
-    NSCellImagePosition, NSEvent, NSImage, NSMenu, NSStatusBar, NSStatusItem, NSTrackingArea,
-    NSTrackingAreaOptions, NSVariableStatusItemLength, NSView, NSWindow,
+    NSCellImagePosition, NSEvent, NSEventModifierFlags, NSImage, NSMenu, NSStatusBar, NSStatusItem,
+    NSTrackingArea, NSTrackingAreaOptions, NSVariableStatusItemLength, NSView, NSWindow,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{CGDisplayPixelsHigh, CGMainDisplayID};
@@ -81,6 +81,7 @@ impl TrayIcon {
                 status_item: ns_status_item.retain(),
                 menu_on_left_click: Cell::new(attrs.menu_on_left_click),
                 menu_on_right_click: Cell::new(attrs.menu_on_right_click),
+                left_mouse_event_filter: LeftMouseEventFilter::default(),
             });
             let tray_target: Retained<TrayTarget> = msg_send![super(target), initWithFrame: frame];
             tray_target.setWantsLayer(true);
@@ -312,6 +313,27 @@ fn set_icon_for_ns_status_item_button(
     Ok(())
 }
 
+#[derive(Debug, Default)]
+struct LeftMouseEventFilter {
+    // Synthetic reorder events may carry Command on mouse-down but not mouse-up.
+    suppress_mouse_up: Cell<bool>,
+}
+
+impl LeftMouseEventFilter {
+    fn should_dispatch(&self, state: MouseButtonState, command_pressed: bool) -> bool {
+        match state {
+            MouseButtonState::Down => {
+                self.suppress_mouse_up.set(command_pressed);
+                !command_pressed
+            }
+            MouseButtonState::Up => {
+                let suppress_mouse_up = self.suppress_mouse_up.replace(false);
+                !(suppress_mouse_up || command_pressed)
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 struct TrayTargetIvars {
     id: Retained<NSString>,
@@ -319,6 +341,7 @@ struct TrayTargetIvars {
     status_item: Retained<NSStatusItem>,
     menu_on_left_click: Cell<bool>,
     menu_on_right_click: Cell<bool>,
+    left_mouse_event_filter: LeftMouseEventFilter,
 }
 
 define_class!(
@@ -331,6 +354,27 @@ define_class!(
     impl TrayTarget {
         #[unsafe(method(mouseDown:))]
         fn on_mouse_down(&self, event: &NSEvent) {
+            let command_pressed = unsafe {
+                event
+                    .modifierFlags()
+                    .contains(NSEventModifierFlags::Command)
+            };
+            if !self
+                .ivars()
+                .left_mouse_event_filter
+                .should_dispatch(MouseButtonState::Down, command_pressed)
+            {
+                let mtm = MainThreadMarker::from(self);
+                unsafe {
+                    self.ivars()
+                        .status_item
+                        .button(mtm)
+                        .unwrap()
+                        .mouseDown(event);
+                }
+                return;
+            }
+
             send_mouse_event(
                 self,
                 event,
@@ -345,11 +389,26 @@ define_class!(
 
         #[unsafe(method(mouseUp:))]
         fn on_mouse_up(&self, event: &NSEvent) {
+            let command_pressed = unsafe {
+                event
+                    .modifierFlags()
+                    .contains(NSEventModifierFlags::Command)
+            };
+            let should_dispatch = self
+                .ivars()
+                .left_mouse_event_filter
+                .should_dispatch(MouseButtonState::Up, command_pressed);
+
             let mtm = MainThreadMarker::from(self);
             unsafe {
                 let button = self.ivars().status_item.button(mtm).unwrap();
                 button.highlight(false);
             }
+
+            if !should_dispatch {
+                return;
+            }
+
             send_mouse_event(
                 self,
                 event,
@@ -625,4 +684,19 @@ struct MouseClickEvent {
 /// to convert between the two coordinate systems.
 fn flip_window_screen_coordinates(y: f64) -> f64 {
     unsafe { CGDisplayPixelsHigh(CGMainDisplayID()) as f64 - y }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_mouse_down_suppresses_only_that_left_click_gesture() {
+        let filter = LeftMouseEventFilter::default();
+
+        assert!(!filter.should_dispatch(MouseButtonState::Down, true));
+        assert!(!filter.should_dispatch(MouseButtonState::Up, false));
+        assert!(filter.should_dispatch(MouseButtonState::Down, false));
+        assert!(filter.should_dispatch(MouseButtonState::Up, false));
+    }
 }
