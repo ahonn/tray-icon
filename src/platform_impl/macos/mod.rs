@@ -57,13 +57,13 @@ impl TrayIcon {
 
         set_icon_for_ns_status_item_button(
             &ns_status_item,
-            attrs.icon.clone(),
+            attrs.icon.as_ref(),
             attrs.icon_is_template,
             mtm,
         )?;
 
-        Self::set_tooltip_inner(&ns_status_item, attrs.tooltip.clone(), mtm)?;
-        Self::set_title_inner(&ns_status_item, attrs.title.clone(), mtm);
+        Self::set_tooltip_inner(&ns_status_item, attrs.tooltip.as_deref(), mtm)?;
+        Self::set_title_inner(&ns_status_item, attrs.title.as_deref(), mtm);
 
         let tray_target = unsafe {
             let button = ns_status_item.button(mtm).unwrap();
@@ -109,7 +109,7 @@ impl TrayIcon {
     pub fn set_icon(&mut self, icon: Option<Icon>) -> crate::Result<()> {
         if let (Some(ns_status_item), Some(tray_target)) = (&self.ns_status_item, &self.tray_target)
         {
-            set_icon_for_ns_status_item_button(ns_status_item, icon.clone(), false, self.mtm)?;
+            set_icon_for_ns_status_item_button(ns_status_item, icon.as_ref(), false, self.mtm)?;
             tray_target.update_dimensions();
         }
         self.attrs.icon = icon;
@@ -138,7 +138,7 @@ impl TrayIcon {
         let tooltip = tooltip.map(|s| s.as_ref().to_string());
         if let (Some(ns_status_item), Some(tray_target)) = (&self.ns_status_item, &self.tray_target)
         {
-            Self::set_tooltip_inner(ns_status_item, tooltip.clone(), self.mtm)?;
+            Self::set_tooltip_inner(ns_status_item, tooltip.as_deref(), self.mtm)?;
             tray_target.update_dimensions();
         }
         self.attrs.tooltip = tooltip;
@@ -163,7 +163,7 @@ impl TrayIcon {
         let title = title.map(|s| s.as_ref().to_string());
         if let (Some(ns_status_item), Some(tray_target)) = (&self.ns_status_item, &self.tray_target)
         {
-            Self::set_title_inner(ns_status_item, title.clone(), self.mtm);
+            Self::set_title_inner(ns_status_item, title.as_deref(), self.mtm);
             tray_target.update_dimensions();
         }
         self.attrs.title = title;
@@ -219,7 +219,7 @@ impl TrayIcon {
         {
             set_icon_for_ns_status_item_button(
                 ns_status_item,
-                icon.clone(),
+                icon.as_ref(),
                 is_template,
                 self.mtm,
             )?;
@@ -278,7 +278,7 @@ impl Drop for TrayIcon {
 
 fn set_icon_for_ns_status_item_button(
     ns_status_item: &NSStatusItem,
-    icon: Option<Icon>,
+    icon: Option<&Icon>,
     icon_is_template: bool,
     mtm: MainThreadMarker,
 ) -> crate::Result<()> {
